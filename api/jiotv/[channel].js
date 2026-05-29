@@ -45,13 +45,19 @@ export default async function handler(req, res) {
     const arrayBuffer = await response.arrayBuffer();
     const imageBuffer = Buffer.from(arrayBuffer);
 
-    // 4. Initialize pipeline and execute base resize/background fill
+// 4. Initialize pipeline and execute base resize/background fill
     let pipeline = sharp(imageBuffer).resize({
       width,
       height,
       fit: 'contain',
-      background: bgColor
+      background: bgColor // This colors the extra padding
     });
+
+    // NEW: If a custom background was requested (alpha is 1), 
+    // flatten the transparent image pixels onto that color.
+    if (bgColor.alpha === 1) {
+      pipeline = pipeline.flatten({ background: bgColor });
+    }
 
     // 5. Apply dynamic vector masks for frame variations
     if (frame === 'circle') {
