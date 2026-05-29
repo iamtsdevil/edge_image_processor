@@ -56,67 +56,55 @@ export default async function handler(req, res) {
 
       const logoBuffer = Buffer.from(await logoResponse.arrayBuffer());
 
-      // 4. Initialize pipeline and execute base resize/background fill
-      let pipeline = sharp(logoBuffer).resize({
+            // 4. FIRST PIPELINE: Execute base resize, background fill, and flush to buffer
+      let basePipeline = sharp(logoBuffer).resize({
         width,
         height,
         fit: 'contain',
         background: bgColor 
       });
 
-            if (bgColor.alpha === 1) {
-        pipeline = pipeline.flatten({ background: bgColor });
+      if (bgColor.alpha === 1) {
+        basePipeline = basePipeline.flatten({ background: bgColor });
       }
 
-      // FIX 1: Bring back the alpha channel so our mask can carve out transparent corners!
-      pipeline = pipeline.ensureAlpha();
+      // We explicitly convert to PNG buffer here to lock in the dimensions 
+      // and guarantee the alpha channel is ready for masking.
+      const sizedBuffer = await basePipeline.ensureAlpha().png().toBuffer();
 
-      // 5. Apply Masks and Watermarks via Compositing
+      // 5. SECOND PIPELINE: Initialize new pipeline with the correctly sized buffer
+      let pipeline = sharp(sizedBuffer);
       const compositeOperations = [];
 
       // A. Apply the dynamic vector mask if a frame is requested
       if (frame === 'circle') {
         const radius = Math.min(width, height) / 2;
         const circleMask = Buffer.from(
-          // FIX 2: Add xmlns="http://www.w3.org/2000/svg" so Sharp knows how to parse the SVG
-          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-             <circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" />
-           </svg>`
+          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" /></svg>`
         );
         compositeOperations.push({ input: circleMask, blend: 'dest-in' });
       } else if (frame === 'rounded') {
         const rx = Math.min(width, height) * 0.1; 
         const roundedMask = Buffer.from(
-          // FIX 2: Add xmlns="http://www.w3.org/2000/svg" here as well
-          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-             <rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" />
-           </svg>`
+          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" /></svg>`
         );
         compositeOperations.push({ input: roundedMask, blend: 'dest-in' });
       }
 
-            // B. Apply the Watermark
+      // B. Apply the Watermark
       if (watermarkUrl && responses[1] && responses[1].ok) {
-        // Parse Watermark Parameters with Safe Defaults
         const validPositions = ['center', 'north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
         const wmPos = validPositions.includes(req.query.wm_pos) ? req.query.wm_pos : 'southeast';
         const wmOpacity = Math.min(Math.max(parseFloat(req.query.wm_op) || 1, 0.1), 1);
 
         const wmBuffer = Buffer.from(await responses[1].arrayBuffer());
-        
-        // Dynamically resize the watermark so it isn't massive
         const wmTargetWidth = Math.max(Math.floor(width * 0.25), 20);
         
-        // Initialize watermark pipeline
-        let wmPipeline = sharp(wmBuffer)
-          .resize({ width: wmTargetWidth })
-          .ensureAlpha(); // Ensure an alpha channel exists for transparency manipulation
+        let wmPipeline = sharp(wmBuffer).resize({ width: wmTargetWidth }).ensureAlpha();
 
-        // Apply transparency if requested (less than solid 1.0)
         if (wmOpacity < 1) {
           const alphaVal = Math.round(wmOpacity * 255);
           wmPipeline = wmPipeline.composite([{
-            // Create a 1x1 pixel with the requested alpha value, tile it, and multiply
             input: Buffer.from([255, 255, 255, alphaVal]),
             raw: { width: 1, height: 1, channels: 4 },
             tile: true,
@@ -125,24 +113,18 @@ export default async function handler(req, res) {
         }
 
         const processedWatermark = await wmPipeline.toBuffer();
-
-        compositeOperations.push({
-          input: processedWatermark,
-          gravity: wmPos,
-          blend: 'over' 
-        });
+        compositeOperations.push({ input: processedWatermark, gravity: wmPos, blend: 'over' });
       }
-
 
       // Execute all overlays (masks + watermarks) in one efficient pass
       if (compositeOperations.length > 0) {
         pipeline = pipeline.composite(compositeOperations);
       }
 
-    // 6. Output transformation compile
-    const finalImageBuffer = await pipeline
-      .png({ quality, compressionLevel: 8 })
-      .toBuffer();
+      // 6. Output final transformation compile
+      const finalImageBuffer = await pipeline
+        .png({ quality, compressionLevel: 8 })
+        .toBuffer();
 
     // 7. Establish downstream network headers for browser & CDN caching
     res.setHeader('Content-Type', 'image/png');
