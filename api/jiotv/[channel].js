@@ -1,4 +1,7 @@
 import sharp from 'sharp';
+import path from 'path';
+import fs from 'fs';
+
 
 // Helper function to validate and convert hex colors safely
 const parseHexColor = (hex) => {
@@ -39,8 +42,16 @@ export default async function handler(req, res) {
     const watermarkUrl = req.query.watermark;
 
     try {
-      // 3. Fetch remote image assets (Concurrently for maximum speed)
+      // 3. Fetch remote image assets
       const fetchPromises = [fetch(targetUrl)];
+      
+      // Only fetch remotely if a watermark URL is provided AND it isn't the keyword "local"
+      if (watermarkUrl && watermarkUrl !== 'local') {
+        fetchPromises.push(fetch(watermarkUrl));
+      }
+
+      const responses = await Promise.all(fetchPromises);
+
       
       // If a watermark URL is provided, fetch it at the same time
       if (watermarkUrl) {
@@ -92,28 +103,42 @@ export default async function handler(req, res) {
       }
 
       // B. Apply the Watermark
-      if (watermarkUrl && responses[1] && responses[1].ok) {
-        const validPositions = ['center', 'north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
-        const wmPos = validPositions.includes(req.query.wm_pos) ? req.query.wm_pos : 'southeast';
-        const wmOpacity = Math.min(Math.max(parseFloat(req.query.wm_op) || 1, 0.1), 1);
+      if (watermarkUrl) {
+        let wmBuffer = null;
 
-        const wmBuffer = Buffer.from(await responses[1].arrayBuffer());
-        const wmTargetWidth = Math.max(Math.floor(width * 0.25), 20);
-        
-        let wmPipeline = sharp(wmBuffer).resize({ width: wmTargetWidth }).ensureAlpha();
-
-        if (wmOpacity < 1) {
-          const alphaVal = Math.round(wmOpacity * 255);
-          wmPipeline = wmPipeline.composite([{
-            input: Buffer.from([255, 255, 255, alphaVal]),
-            raw: { width: 1, height: 1, channels: 4 },
-            tile: true,
-            blend: 'dest-in' 
-          }]);
+        // Determine if we are loading the local file or the remote fetch response
+        if (watermarkUrl === 'local') {
+          const localPath = path.join(process.cwd(), 'assets', 'watermark.png');
+          if (fs.existsSync(localPath)) {
+            wmBuffer = fs.readFileSync(localPath);
+          }
+        } else if (responses[1] && responses[1].ok) {
+          wmBuffer = Buffer.from(await responses[1].arrayBuffer());
         }
 
-        const processedWatermark = await wmPipeline.toBuffer();
-        compositeOperations.push({ input: processedWatermark, gravity: wmPos, blend: 'over' });
+        // If we successfully grabbed a watermark buffer (local or remote), apply it
+        if (wmBuffer) {
+          const validPositions = ['center', 'north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+          const wmPos = validPositions.includes(req.query.wm_pos) ? req.query.wm_pos : 'southeast';
+          const wmOpacity = Math.min(Math.max(parseFloat(req.query.wm_op) || 1, 0.1), 1);
+
+          const wmTargetWidth = Math.max(Math.floor(width * 0.25), 20);
+          
+          let wmPipeline = sharp(wmBuffer).resize({ width: wmTargetWidth }).ensureAlpha();
+
+          if (wmOpacity < 1) {
+            const alphaVal = Math.round(wmOpacity * 255);
+            wmPipeline = wmPipeline.composite([{
+              input: Buffer.from([255, 255, 255, alphaVal]),
+              raw: { width: 1, height: 1, channels: 4 },
+              tile: true,
+              blend: 'dest-in' 
+            }]);
+          }
+
+          const processedWatermark = await wmPipeline.toBuffer();
+          compositeOperations.push({ input: processedWatermark, gravity: wmPos, blend: 'over' });
+        }
       }
 
       // Execute all overlays (masks + watermarks) in one efficient pass
