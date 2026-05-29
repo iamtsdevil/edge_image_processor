@@ -64,9 +64,12 @@ export default async function handler(req, res) {
         background: bgColor 
       });
 
-      if (bgColor.alpha === 1) {
+            if (bgColor.alpha === 1) {
         pipeline = pipeline.flatten({ background: bgColor });
       }
+
+      // FIX 1: Bring back the alpha channel so our mask can carve out transparent corners!
+      pipeline = pipeline.ensureAlpha();
 
       // 5. Apply Masks and Watermarks via Compositing
       const compositeOperations = [];
@@ -75,13 +78,19 @@ export default async function handler(req, res) {
       if (frame === 'circle') {
         const radius = Math.min(width, height) / 2;
         const circleMask = Buffer.from(
-          `<svg width="${width}" height="${height}"><circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" /></svg>`
+          // FIX 2: Add xmlns="http://www.w3.org/2000/svg" so Sharp knows how to parse the SVG
+          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+             <circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" />
+           </svg>`
         );
         compositeOperations.push({ input: circleMask, blend: 'dest-in' });
       } else if (frame === 'rounded') {
         const rx = Math.min(width, height) * 0.1; 
         const roundedMask = Buffer.from(
-          `<svg width="${width}" height="${height}"><rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" /></svg>`
+          // FIX 2: Add xmlns="http://www.w3.org/2000/svg" here as well
+          `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+             <rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" />
+           </svg>`
         );
         compositeOperations.push({ input: roundedMask, blend: 'dest-in' });
       }
