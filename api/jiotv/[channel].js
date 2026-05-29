@@ -41,7 +41,7 @@ export default async function handler(req, res) {
      // Parse the optional watermark URL
     const watermarkUrl = req.query.watermark;
 
-    try {
+        try {
       // 3. Fetch remote image assets
       const fetchPromises = [fetch(targetUrl)];
       
@@ -50,14 +50,7 @@ export default async function handler(req, res) {
         fetchPromises.push(fetch(watermarkUrl));
       }
 
-      const responses = await Promise.all(fetchPromises);
-
-      
-      // If a watermark URL is provided, fetch it at the same time
-      if (watermarkUrl) {
-        fetchPromises.push(fetch(watermarkUrl));
-      }
-
+      // Execute fetches and store in 'responses' exactly ONCE
       const responses = await Promise.all(fetchPromises);
       const logoResponse = responses[0];
 
