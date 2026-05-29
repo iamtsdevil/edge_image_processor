@@ -86,22 +86,44 @@ export default async function handler(req, res) {
         compositeOperations.push({ input: roundedMask, blend: 'dest-in' });
       }
 
-      // B. Apply the Watermark
+            // B. Apply the Watermark
       if (watermarkUrl && responses[1] && responses[1].ok) {
+        // Parse Watermark Parameters with Safe Defaults
+        const validPositions = ['center', 'north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+        const wmPos = validPositions.includes(req.query.wm_pos) ? req.query.wm_pos : 'southeast';
+        const wmOpacity = Math.min(Math.max(parseFloat(req.query.wm_op) || 1, 0.1), 1);
+
         const wmBuffer = Buffer.from(await responses[1].arrayBuffer());
         
-        // Dynamically resize the watermark so it isn't massive (e.g., 25% of the main logo width)
+        // Dynamically resize the watermark so it isn't massive
         const wmTargetWidth = Math.max(Math.floor(width * 0.25), 20);
-        const resizedWatermark = await sharp(wmBuffer)
+        
+        // Initialize watermark pipeline
+        let wmPipeline = sharp(wmBuffer)
           .resize({ width: wmTargetWidth })
-          .toBuffer();
+          .ensureAlpha(); // Ensure an alpha channel exists for transparency manipulation
+
+        // Apply transparency if requested (less than solid 1.0)
+        if (wmOpacity < 1) {
+          const alphaVal = Math.round(wmOpacity * 255);
+          wmPipeline = wmPipeline.composite([{
+            // Create a 1x1 pixel with the requested alpha value, tile it, and multiply
+            input: Buffer.from([255, 255, 255, alphaVal]),
+            raw: { width: 1, height: 1, channels: 4 },
+            tile: true,
+            blend: 'dest-in' 
+          }]);
+        }
+
+        const processedWatermark = await wmPipeline.toBuffer();
 
         compositeOperations.push({
-          input: resizedWatermark,
-          gravity: 'southeast', // Places the watermark in the bottom-right corner
-          blend: 'over'         // Lays it on top of the main logo
+          input: processedWatermark,
+          gravity: wmPos,
+          blend: 'over' 
         });
       }
+
 
       // Execute all overlays (masks + watermarks) in one efficient pass
       if (compositeOperations.length > 0) {
