@@ -35,48 +35,78 @@ export default async function handler(req, res) {
   // Parse background color (e.g., bg=1e1e1e)
   const bgColor = parseHexColor(req.query.bg);
 
-  try {
-    // 3. Fetch remote image asset
-    const response = await fetch(targetUrl);
-    if (!response.ok) {
-      return res.status(404).send('Error: Channel logo asset not found.');
-    }
+     // Parse the optional watermark URL
+    const watermarkUrl = req.query.watermark;
 
-    const arrayBuffer = await response.arrayBuffer();
-    const imageBuffer = Buffer.from(arrayBuffer);
+    try {
+      // 3. Fetch remote image assets (Concurrently for maximum speed)
+      const fetchPromises = [fetch(targetUrl)];
+      
+      // If a watermark URL is provided, fetch it at the same time
+      if (watermarkUrl) {
+        fetchPromises.push(fetch(watermarkUrl));
+      }
 
-// 4. Initialize pipeline and execute base resize/background fill
-    let pipeline = sharp(imageBuffer).resize({
-      width,
-      height,
-      fit: 'contain',
-      background: bgColor // This colors the extra padding
-    });
+      const responses = await Promise.all(fetchPromises);
+      const logoResponse = responses[0];
 
-    // NEW: If a custom background was requested (alpha is 1), 
-    // flatten the transparent image pixels onto that color.
-    if (bgColor.alpha === 1) {
-      pipeline = pipeline.flatten({ background: bgColor });
-    }
+      if (!logoResponse.ok) {
+        return res.status(404).send('Error: Channel logo asset not found.');
+      }
 
-    // 5. Apply dynamic vector masks for frame variations
-    if (frame === 'circle') {
-      const radius = Math.min(width, height) / 2;
-      const circleMask = Buffer.from(
-        `<svg width="${width}" height="${height}">
-          <circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" />
-        </svg>`
-      );
-      pipeline = pipeline.composite([{ input: circleMask, blend: 'dest-in' }]);
-    } else if (frame === 'rounded') {
-      const rx = Math.min(width, height) * 0.1; // Dynamic 10% corner radius
-      const roundedMask = Buffer.from(
-        `<svg width="${width}" height="${height}">
-          <rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" />
-        </svg>`
-      );
-      pipeline = pipeline.composite([{ input: roundedMask, blend: 'dest-in' }]);
-    }
+      const logoBuffer = Buffer.from(await logoResponse.arrayBuffer());
+
+      // 4. Initialize pipeline and execute base resize/background fill
+      let pipeline = sharp(logoBuffer).resize({
+        width,
+        height,
+        fit: 'contain',
+        background: bgColor 
+      });
+
+      if (bgColor.alpha === 1) {
+        pipeline = pipeline.flatten({ background: bgColor });
+      }
+
+      // 5. Apply Masks and Watermarks via Compositing
+      const compositeOperations = [];
+
+      // A. Apply the dynamic vector mask if a frame is requested
+      if (frame === 'circle') {
+        const radius = Math.min(width, height) / 2;
+        const circleMask = Buffer.from(
+          `<svg width="${width}" height="${height}"><circle cx="${width / 2}" cy="${height / 2}" r="${radius}" fill="#fff" /></svg>`
+        );
+        compositeOperations.push({ input: circleMask, blend: 'dest-in' });
+      } else if (frame === 'rounded') {
+        const rx = Math.min(width, height) * 0.1; 
+        const roundedMask = Buffer.from(
+          `<svg width="${width}" height="${height}"><rect x="0" y="0" width="${width}" height="${height}" rx="${rx}" ry="${rx}" fill="#fff" /></svg>`
+        );
+        compositeOperations.push({ input: roundedMask, blend: 'dest-in' });
+      }
+
+      // B. Apply the Watermark
+      if (watermarkUrl && responses[1] && responses[1].ok) {
+        const wmBuffer = Buffer.from(await responses[1].arrayBuffer());
+        
+        // Dynamically resize the watermark so it isn't massive (e.g., 25% of the main logo width)
+        const wmTargetWidth = Math.max(Math.floor(width * 0.25), 20);
+        const resizedWatermark = await sharp(wmBuffer)
+          .resize({ width: wmTargetWidth })
+          .toBuffer();
+
+        compositeOperations.push({
+          input: resizedWatermark,
+          gravity: 'southeast', // Places the watermark in the bottom-right corner
+          blend: 'over'         // Lays it on top of the main logo
+        });
+      }
+
+      // Execute all overlays (masks + watermarks) in one efficient pass
+      if (compositeOperations.length > 0) {
+        pipeline = pipeline.composite(compositeOperations);
+      }
 
     // 6. Output transformation compile
     const finalImageBuffer = await pipeline
