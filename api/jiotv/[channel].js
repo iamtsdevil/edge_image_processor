@@ -146,7 +146,11 @@ export default async function handler(req, res) {
 
     // 7. Establish downstream network headers for browser & CDN caching
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', 'public, max-age=604800, s-maxage=86400, stale-while-revalidate=3600');
+
+// Browser caches for 7 days | Edge CDNs cache for 30 days | SWR background updates for 1 day
+
+    res.setHeader('Cache-Control', 'public, max-age=604800, s-maxage=2592000, stale-while-revalidate=86400');
+
     
     return res.status(200).send(finalImageBuffer);
 
